@@ -231,7 +231,6 @@ void sensorread() {
 ![image](https://github.com/user-attachments/assets/85385a95-3e80-4f76-bf5d-d1d4824219f2)
 
 
-![image](https://github.com/user-attachments/assets/fca8e7ec-1468-46d6-a849-676069b4daf8)
 
 # RESULT:
 
