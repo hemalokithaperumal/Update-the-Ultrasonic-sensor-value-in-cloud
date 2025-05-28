@@ -69,56 +69,153 @@ Analytics capabilities enable organizations to derive meaningful insights from t
 
 # PROGRAM:
 ```
-#include "ThingSpeak.h"
-#include <WiFi.h>
+#include <SoftwareSerial.h>
 
-char ssid[] = "OnePlus Nord CE3 5G"; //SSID
-char pass[] = "kugipapa"; // Password
+// Pin configuration for ultrasonic sensor
+#define TRIG_PIN 7
+#define ECHO_PIN 8
 
-const int trigger = 25;
-const int echo = 26;
-long T;
-float distanceCM;
-WiFiClient  client;
+SoftwareSerial ss(10, 11); // RX, TX to LA66
 
-unsigned long myChannelField = 2729986; // Channel ID
-const int ChannelField = 1; // Which channel to write data
-const char * myWriteAPIKey = "PHIUNMKBUSCDZSRW"; // Your write API Key
+String inputString = "";
+bool stringComplete = false;
 
-void setup()
-{
-  Serial.begin(115200);
-  pinMode(trigger, OUTPUT);
-  pinMode(echo, INPUT);
-  WiFi.mode(WIFI_STA);
-  ThingSpeak.begin(client);
+long old_time = millis();
+long new_time;
+long uplink_interval = 30000;
+
+bool time_to_at_recvb = false;
+bool get_LA66_data_status = false;
+bool network_joined_status = false;
+
+char rxbuff[128];
+uint8_t rxbuff_index = 0;
+char Downlink_Data;
+
+uint16_t Distance = 0;
+uint8_t LoRa_Uplink_Buffer[2]; // 2 bytes for Distance
+
+void setup() {
+  Serial.begin(9600);
+  ss.begin(9600);
+  ss.listen();
+
+  pinMode(6, OUTPUT); // onboard LED
+  inputString.reserve(200);
+
+  pinMode(TRIG_PIN, OUTPUT);  // Initialize the TRIG_PIN
+  pinMode(ECHO_PIN, INPUT);   // Initialize the ECHO_PIN
+
+  ss.println("ATZ");   // Reset LA66
 }
-void loop()
-{
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.print("Attempting to connect to SSID: ");
-    Serial.println(ssid);
-    while (WiFi.status() != WL_CONNECTED)
-    {
-      WiFi.begin(ssid, pass);
-      Serial.print(".");
-      delay(5000);
+
+void loop() {
+  new_time = millis();
+  if ((new_time - old_time >= uplink_interval) && network_joined_status) {
+    old_time = new_time;
+    get_LA66_data_status = false;
+    sensorread();
+
+    // Fill buffer
+    LoRa_Uplink_Buffer[0] = highByte(Distance);
+    LoRa_Uplink_Buffer[1] = lowByte(Distance);
+
+    // Build HEX payload string
+    String payload = "";
+    for (int i = 0; i < 2; i++) {
+      if (LoRa_Uplink_Buffer[i] < 0x10) payload += "0";
+      payload += String(LoRa_Uplink_Buffer[i], HEX);
     }
-    Serial.println("\nConnected.");
+
+    ss.println("AT+SENDB=0,4,2," + payload);
+    Serial.println("Sent Payload: " + payload);
   }
-  digitalWrite(trigger, LOW);
-  delay(1);
-  digitalWrite(trigger, HIGH);
+
+  if (time_to_at_recvb) {
+    time_to_at_recvb = false;
+    get_LA66_data_status = true;
+    delay(1000);
+    ss.println("AT+CFG");
+  }
+
+  while (ss.available()) {
+    char inChar = (char)ss.read();
+    inputString += inChar;
+    rxbuff[rxbuff_index++] = inChar;
+    if (rxbuff_index > 127) break;
+
+    if (inChar == '\n' || inChar == '\r') {
+      stringComplete = true;
+      rxbuff[rxbuff_index] = '\0';
+
+      if (strncmp(rxbuff, "JOINED", 6) == 0) network_joined_status = true;
+      if (strncmp(rxbuff, "Dragino LA66 Device", 19) == 0) network_joined_status = false;
+
+      if (strncmp(rxbuff, "Run AT+RECVB=? to see detail", 28) == 0) {
+        time_to_at_recvb = true;
+        stringComplete = false;
+        inputString = "\0";
+      }
+
+      if (strncmp(rxbuff, "AT+RECVB=", 9) == 0) {
+        stringComplete = false;
+        inputString = "\0";
+        Serial.print("\nGet downlink data (FPort & Payload): ");
+        Serial.println(&rxbuff[12]);
+        Downlink_Data = rxbuff[12];
+        if (Downlink_Data == '1') 
+        { 
+        Serial.println("LED_ON"); 
+        digitalWrite(6, HIGH); 
+        }
+        else if (Downlink_Data == '2') 
+        { 
+          Serial.println("LED_OFF"); 
+          digitalWrite(6, LOW); 
+        }
+      }
+
+      rxbuff_index = 0;
+      if (get_LA66_data_status) {
+        stringComplete = false;
+        inputString = "\0";
+      }
+    }
+  }
+
+  while (Serial.available()) {
+    char inChar = (char)Serial.read();
+    inputString += inChar;
+    if (inChar == '\n' || inChar == '\r') {
+      ss.print(inputString);
+      inputString = "\0";
+    }
+  }
+
+  if (stringComplete) {
+    Serial.print(inputString);
+    inputString = "\0";
+    stringComplete = false;
+  }
+}
+
+void sensorread() {
+  // Trigger the ultrasonic pulse
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
-  digitalWrite(trigger, LOW);
-  T = pulseIn(echo, HIGH);
-  distanceCM = T * 0.034; //340 m/s or 0.034 cm/microsec
-  distanceCM = distanceCM / 2;
-  Serial.print("Distance in cm: ");
-  Serial.println(distanceCM);
-  ThingSpeak.writeField(myChannelField, ChannelField, distanceCM, myWriteAPIKey);
-  delay(1000);
+  digitalWrite(TRIG_PIN, LOW);
+
+  // Measure the pulse duration
+  long duration = pulseIn(ECHO_PIN, HIGH);
+
+  // Calculate distance in cm (speed of sound is 34300 cm/s)
+  Distance = duration * 0.0344 / 2; // Divide by 2 because the pulse travels to the object and back
+
+  // Print readable values
+  Serial.print("Distance (cm): ");
+  Serial.println(Distance);
 }
 ```
 # CIRCUIT DIAGRAM:
@@ -126,7 +223,18 @@ void loop()
 
 
 # OUTPUT:
-![Screenshot 2024-11-06 093932](https://github.com/user-attachments/assets/abb995e1-9e28-4169-b241-f0e2fef0fd56)
+
+![image](https://github.com/user-attachments/assets/79cf76af-9d38-4278-9683-a55097f9efeb)
+
+![Screenshot 2025-05-24 143627](https://github.com/user-attachments/assets/0221d2b8-a3cb-494d-889b-d6b946bad09f)
+
+
+
+![image](https://github.com/user-attachments/assets/85385a95-3e80-4f76-bf5d-d1d4824219f2)
+
+
+![image](https://github.com/user-attachments/assets/fca8e7ec-1468-46d6-a849-676069b4daf8)
+
 # RESULT:
 
 Thus the Ultrasonic sensor value is uploaded in the Things mate using Arduino controller.
