@@ -218,8 +218,6 @@ void sensorread() {
   Serial.println(Distance);
 }
 ```
-# CIRCUIT DIAGRAM:
-![WhatsApp Image 2024-11-06 at 9 50 06 AM](https://github.com/user-attachments/assets/a4e3396e-19d2-47c3-8622-2175a273d985)
 
 
 # OUTPUT:
